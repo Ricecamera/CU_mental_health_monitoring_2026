@@ -1,4 +1,4 @@
 [core]
     remote = storage
 ['remote "storage"']
-    url = gdrive://1K8ypniycaLaOPnpBLHpmhv9Btlf3Ms7H
+    url = s3://cu-guessing-engineering-dvc/dvc-cache
