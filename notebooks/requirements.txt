@@ -1,8 +1,12 @@
+# Target runtime: sagemaker-scikit-learn:1.2-1-cpu-py3 (Python 3.9)
+# Pin sklearn and numpy to match the container to avoid ABI mismatches.
 pandas
-scikit-learn
+scikit-learn==1.2.2
+numpy>=1.23.5,<2.0
 matplotlib
 seaborn
 nltk
+greenlet==3.0.3
 mlflow
 jupyter
 ipykernel
