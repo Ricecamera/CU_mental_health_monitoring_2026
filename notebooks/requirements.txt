@@ -1,0 +1,9 @@
+pandas
+scikit-learn
+matplotlib
+seaborn
+nltk
+mlflow
+jupyter
+ipykernel
+boto3
