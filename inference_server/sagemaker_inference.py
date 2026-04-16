@@ -1,177 +1,155 @@
 """
-SageMaker inference script for mental health text classification.
-This script implements the required SageMaker inference handlers.
+SageMaker inference script for DistilBERT mental health text classification.
+Model : model3  Version : 2
+Architecture : distilbert-base-uncased fine-tuned, 4-class classifier
+Labels : 0=Normal  1=Anxiety  2=Depression  3=Suicidal
 """
 import os
 import re
 import json
+import string
 import logging
-from io import StringIO
+from turtle import pd
 
-import pandas as pd
-import joblib
+import nltk
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# Configure logging
+nltk.download("stopwords", quiet=True)
+nltk.download("wordnet", quiet=True)
+
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Label mapping
-LABEL2ID = {
-    "Normal": 0,
-    "Negative": 1,
-    "Very Negative": 2,
-    "Suicidal": 3,
-}
-ID2LABEL = {v: k for k, v in LABEL2ID.items()}
+ID2LABEL = {0: "Normal", 1: "Anxiety", 2: "Depression", 3: "Suicidal"}
+BERT_MODEL_NAME = "distilbert-base-uncased"
+MAX_LENGTH = 128
+
+_stop_words = set(stopwords.words("english"))
+_negate_raw = list(filter(lambda x: x.endswith(("'t", "'nt")), stopwords.words("english"))) + ["can't"]
+_negate_aux = list(map(lambda x: x.replace("'", ""), _negate_raw)) + list(map(lambda x: x[:-2], _negate_raw))
+_lemmatizer = WordNetLemmatizer()
 
 
-def clean_text(text: str) -> str:
-    """
-    Clean and preprocess text for model input.
-    Same preprocessing as training pipeline.
-    """
+def clean_text(text):
     text = text.lower()
-    text = text.encode("ascii", "ignore").decode()
-    text = re.sub(r'[^a-z0-9\s!?]', '', text)
+    text = re.sub(r"<.*?>", "", text)
+    text = re.sub(r"https?://\S+|www\.\S+", "", text)
+    text = text.replace("'", "")
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = " ".join(["not" if w in _negate_aux else w for w in text.split()])
+    text = " ".join([w for w in text.split() if w not in _stop_words or w == "not"])
+    text = re.sub(r"\d+", "", text)
+    text = " ".join([_lemmatizer.lemmatize(w) for w in text.split()])
     return text
 
 
 def model_fn(model_dir):
-    """
-    Load the model from the model directory.
-    This function is called once when the inference container starts.
-    
-    SageMaker will download the model.tar.gz and extract it to model_dir.
-    
-    Args:
-        model_dir: Directory where model artifacts are stored
-        
-    Returns:
-        Loaded model object
-    """
-    logger.info(f"Loading model from {model_dir}")
-    
-    try:
-        # MLflow saves sklearn models as model.pkl inside a 'model' subdirectory
-        model_pkl = os.path.join(model_dir, "model", "model.pkl")
-        
-        if os.path.exists(model_pkl):
-            logger.info(f"Loading model from MLflow format: {model_pkl}")
-            model = joblib.load(model_pkl)
-        else:
-            # Fallback: try direct model.pkl in root
-            model_file = os.path.join(model_dir, "model.pkl")
-            logger.info(f"Loading model from: {model_file}")
-            model = joblib.load(model_file)
-        
-        logger.info("Model loaded successfully")
-        return model
-    
-    except Exception as e:
-        logger.error(f"Error loading model: {e}")
-        raise
+    logger.info(f"Loading BERT model from {model_dir}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = AutoModelForSequenceClassification.from_pretrained(BERT_MODEL_NAME, num_labels=4)
+
+    candidates = [
+        os.path.join(model_dir, "best_model.pth"),
+        os.path.join(model_dir, "data", "model.pth"),
+        os.path.join(model_dir, "model.pth"),
+    ]
+    weights_path = next((p for p in candidates if os.path.exists(p)), None)
+    if not weights_path:
+        raise FileNotFoundError(f"No weights found in {model_dir}. Tried: {candidates}")
+
+    logger.info(f"Loading weights from {weights_path}")
+    state_dict = torch.load(weights_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
+    logger.info("Model and tokenizer ready")
+    return {"model": model, "tokenizer": tokenizer, "device": device}
 
 
 def input_fn(request_body, request_content_type):
-    """
-    Deserialize and prepare the input data.
-    
-    SageMaker calls this function to convert the request payload into
-    a format that can be consumed by predict_fn.
-    
-    Args:
-        request_body: The request payload
-        request_content_type: The content type of the request
-        
-    Returns:
-        Deserialized input data (list of texts)
-    """
-    logger.info(f"Processing input with content type: {request_content_type}")
-    
+    logger.info(f"Deserializing input — content-type: {request_content_type}")
+
     if request_content_type == "application/json":
         data = json.loads(request_body)
-        
-        # Support both single text and list of texts
         if isinstance(data, dict):
             if "texts" in data:
-                texts = data["texts"]
-            elif "text" in data:
-                texts = [data["text"]]
-            elif "instances" in data:
-                # Support SageMaker's default format
-                texts = [inst.get("text", inst) if isinstance(inst, dict) else inst 
-                        for inst in data["instances"]]
-            else:
-                raise ValueError("Request must contain 'text', 'texts', or 'instances' field")
-        elif isinstance(data, list):
-            texts = data
-        elif isinstance(data, str):
-            texts = [data]
-        else:
-            raise ValueError(f"Unsupported data format: {type(data)}")
-        
-        return texts
-    
-    elif request_content_type == "text/plain":
-        # Single text input
-        return [request_body.decode("utf-8")]
-    
-    elif request_content_type == "text/csv":
-        # CSV format with 'text' column
-        df = pd.read_csv(StringIO(request_body.decode("utf-8")))
-        if "text" not in df.columns:
-            raise ValueError("CSV must contain 'text' column")
-        return df["text"].tolist()
-    
-    else:
-        raise ValueError(f"Unsupported content type: {request_content_type}")
+                return data["texts"]
+            if "text" in data:
+                return [data["text"]]
+            if "instances" in data:
+                return [
+                    inst.get("text", inst) if isinstance(inst, dict) else inst
+                    for inst in data["instances"]
+                ]
+            raise ValueError("JSON body must contain 'text', 'texts', or 'instances'")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, str):
+            return [data]
+        raise ValueError(f"Unsupported JSON data type: {type(data)}")
+
+    if request_content_type == "text/plain":
+        body = request_body if isinstance(request_body, str) else request_body.decode("utf-8")
+        return [body]
+
+    raise ValueError(f"Unsupported content type: {request_content_type}")
 
 
-def predict_fn(input_data, model):
-    """
-    Make predictions on the deserialized data.
-    
-    Args:
-        input_data: List of text strings from input_fn
-        model: Loaded model from model_fn
-        
-    Returns:
-        Predictions dictionary
-    """
-    logger.info(f"Making predictions for {len(input_data)} samples")
-    
-    try:
-        # Preprocess texts
-        cleaned_texts = [clean_text(text) for text in input_data]
-        
-        # Create DataFrame for sklearn pipeline
-        df = pd.DataFrame({"text": cleaned_texts})
-        
-        # Get predictions and probabilities
-        predictions = model.predict(df["text"])
-        probabilities = model.predict_proba(df["text"])
-        
-        # Format results
+def predict_fn(input_data, model_artifacts):
+    model = model_artifacts["model"]
+    tokenizer = model_artifacts["tokenizer"]
+    device = model_artifacts["device"]
+
+    logger.info(f"Running inference on {len(input_data)} sample(s)")
+
+    try: 
+        cleaned = [clean_text(t) for t in input_data]
+        encoding = tokenizer(
+            cleaned,
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LENGTH,
+            return_tensors="pt",
+        )
+
+        with torch.no_grad():
+            outputs = model(
+                encoding["input_ids"].to(device),
+                attention_mask=encoding["attention_mask"].to(device),
+            )
+            probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()
+
+        preds = probs.argmax(axis=1)
         results = []
-        for i, (pred, probs) in enumerate(zip(predictions, probabilities)):
-            label = ID2LABEL.get(int(pred), f"Unknown_{pred}")
-            
+        for i, (pred, prob_row) in enumerate(zip(preds, probs)):
+            label = ID2LABEL.get(int(pred))
             # Create probability dict for all classes
             prob_dict = {
                 ID2LABEL.get(j, f"Class_{j}"): float(prob)
-                for j, prob in enumerate(probs)
+                for j, prob in enumerate(prob_row)
             }
-            
+
             results.append({
                 "text": input_data[i],
                 "predicted_label": label,
                 "predicted_class_id": int(pred),
-                "confidence": float(max(probs)),
-                "probabilities": prob_dict
-            })
-        
+                "confidence": float(prob_row[pred]),
+                "probabilities": prob_dict,
+            }
+            )
         logger.info("Predictions completed successfully")
-        return {"predictions": results}
+        return {
+            "predictions": results,
+            "device": str(device),
+            "cuda_available": torch.cuda.is_available(),
+        }
     
     except Exception as e:
         logger.error(f"Prediction error: {e}")
@@ -179,25 +157,14 @@ def predict_fn(input_data, model):
 
 
 def output_fn(prediction, response_content_type):
-    """
-    Serialize the prediction result.
-    
-    Args:
-        prediction: Output from predict_fn
-        response_content_type: Desired response content type
-        
-    Returns:
-        Serialized prediction
-    """
     logger.info(f"Serializing output as {response_content_type}")
-    
     if response_content_type == "application/json":
         return json.dumps(prediction)
-    
     elif response_content_type == "text/csv":
         # Convert to CSV format
         df = pd.DataFrame(prediction["predictions"])
         return df.to_csv(index=False)
-    
+
     else:
         raise ValueError(f"Unsupported response content type: {response_content_type}")
+

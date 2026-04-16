@@ -224,6 +224,5 @@ Response:
 
 - **[IAM_PERMISSIONS.md](IAM_PERMISSIONS.md)** - Complete AWS IAM permissions guide
 - [AWS SageMaker Documentation](https://docs.aws.amazon.com/sagemaker/)
-- [How SageMaker uses your inference code (`model_fn`, `input_fn`, `predict_fn`, `output_fn`)](https://sagemaker.readthedocs.io/en/stable/using_sklearn.html#serve-a-model)
+- [How SageMaker uses your inference code (`model_fn`, `input_fn`, `predict_fn`, `output_fn`)](https://aws.amazon.com/blogs/machine-learning/create-a-sagemaker-inference-endpoint-with-custom-model-extended-container/#:~:text=In%20such%20cases%2C%20SageMaker%20allows,specific%20use%20case%20and%20requirements.)
 - [SageMaker Inference Toolkit default handler service (reference implementation)](https://github.com/aws/sagemaker-inference-toolkit/blob/master/src/sagemaker_inference/default_handler_service.py)
-- [Create your own inference container / model serving docs](https://docs.aws.amazon.com/sagemaker/latest/dg/your-algorithms-inference-code.html)
