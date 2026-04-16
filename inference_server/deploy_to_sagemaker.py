@@ -130,6 +130,7 @@ def create_or_update_endpoint(endpoint_name, config_name):
             print(f"Endpoint in FAILED state — deleting: {endpoint_name}")
             sm.delete_endpoint(EndpointName=endpoint_name)
             sm.get_waiter('endpoint_deleted').wait(EndpointName=endpoint_name)
+            print(f"Creating endpoint: {endpoint_name}")
             sm.create_endpoint(EndpointName=endpoint_name, EndpointConfigName=config_name)
         else:
             sm.update_endpoint(EndpointName=endpoint_name, EndpointConfigName=config_name)

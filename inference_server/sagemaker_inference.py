@@ -63,8 +63,15 @@ def model_fn(model_dir):
         raise FileNotFoundError(f"No weights found in {model_dir}. Tried: {candidates}")
 
     logger.info(f"Loading weights from {weights_path}")
-    state_dict = torch.load(weights_path, map_location=device)
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(weights_path, map_location=device)
+
+    # Handle both full-model saves (torch.save(model, ...)) and state-dict saves
+    if isinstance(checkpoint, dict):
+        model.load_state_dict(checkpoint)
+    else:
+        # Checkpoint is the full model object — extract its state dict
+        model.load_state_dict(checkpoint.state_dict())
+
     model.to(device)
     model.eval()
 
